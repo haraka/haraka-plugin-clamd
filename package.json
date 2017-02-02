@@ -1,0 +1,43 @@
+{
+  "name": "haraka-plugin-clamd",
+  "version": "1.0.0",
+  "description": "Haraka plugin that scans emails with clamd",
+  "main": "index.js",
+  "files": [
+    "CHANGELOG.md",
+    "config"
+  ],
+  "scripts": {
+    "format": "npm run prettier:fix && npm run lint:fix",
+    "lint": "npx eslint@^8 *.js test",
+    "lint:fix": "npx eslint@^8 *.js test --fix",
+    "prettier": "npx prettier . --check",
+    "prettier:fix": "npx prettier . --write --log-level=warn",
+    "test": "node --test",
+    "versions": "npx dependency-version-checker check",
+    "versions:fix": "npx dependency-version-checker update"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haraka/haraka-plugin-clamd.git"
+  },
+  "keywords": [
+    "haraka",
+    "plugin",
+    "clamd"
+  ],
+  "author": "Haraka Team <haraka.team@gmail.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/haraka/haraka-plugin-clamd/issues"
+  },
+  "homepage": "https://github.com/haraka/haraka-plugin-clamd#readme",
+  "dependencies": {
+    "haraka-net-utils": "^1.7.0",
+    "haraka-utils": "^1.1.3"
+  },
+  "devDependencies": {
+    "@haraka/eslint-config": "1.1.3",
+    "haraka-test-fixtures": "1.3.5"
+  }
+}
