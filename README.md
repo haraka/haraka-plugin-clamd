@@ -1,8 +1,6 @@
 [![CI Test Status][ci-img]][ci-url]
 [![Code Climate][clim-img]][clim-url]
 
-[![NPM][npm-img]][npm-url]
-
 # haraka-plugin-clamd
 
 This plug-in implements Anti-Virus scanning with ClamAV using the **clamd** daemon.
@@ -155,5 +153,3 @@ Heuristics.Phishing.*
 [ci-url]: https://github.com/haraka/haraka-plugin-clamd/actions/workflows/ci.yml
 [clim-img]: https://codeclimate.com/github/haraka/haraka-plugin-clamd/badges/gpa.svg
 [clim-url]: https://codeclimate.com/github/haraka/haraka-plugin-clamd
-[npm-img]: https://nodei.co/npm/haraka-plugin-clamd.png
-[npm-url]: https://www.npmjs.com/package/haraka-plugin-clamd
