@@ -6,14 +6,12 @@ const { beforeEach, describe, it } = require('node:test')
 
 const fixtures = require('haraka-test-fixtures')
 
-const _set_up = (t, done) => {
+const _set_up = () => {
   this.plugin = new fixtures.plugin('clamd')
   this.plugin.register()
 
   this.connection = fixtures.connection.createConnection()
   this.connection.init_transaction()
-
-  done()
 }
 
 describe('plugins/clamd', () => {
@@ -75,173 +73,199 @@ describe('plugins/clamd', () => {
   describe('hook_data', () => {
     beforeEach(_set_up)
 
-    it('only_with_attachments, false', (t, done) => {
+    it('only_with_attachments, false', async () => {
       assert.equal(false, this.plugin.cfg.main.only_with_attachments)
-      this.plugin.hook_data(() => {
-        assert.equal(false, this.connection.transaction.parse_body)
-        done()
-      }, this.connection)
+      await new Promise((resolve) => {
+        this.plugin.hook_data(() => {
+          assert.equal(false, this.connection.transaction.parse_body)
+          resolve()
+        }, this.connection)
+      })
     })
 
-    it('only_with_attachments, true', (t, done) => {
+    it('only_with_attachments, true', async () => {
       this.plugin.cfg.main.only_with_attachments = true
       this.connection.transaction.attachment_hooks = () => {}
-      this.plugin.hook_data(() => {
-        assert.equal(true, this.plugin.cfg.main.only_with_attachments)
-        assert.equal(true, this.connection.transaction.parse_body)
-        done()
-      }, this.connection)
+      await new Promise((resolve) => {
+        this.plugin.hook_data(() => {
+          assert.equal(true, this.plugin.cfg.main.only_with_attachments)
+          assert.equal(true, this.connection.transaction.parse_body)
+          resolve()
+        }, this.connection)
+      })
     })
   })
 
   describe('hook_data_post', () => {
     beforeEach(_set_up)
 
-    it('skip attachment', (t, done) => {
+    it('skip attachment', async () => {
       this.connection.transaction.notes = { clamd_found_attachment: false }
       this.plugin.cfg.main.only_with_attachments = true
-      this.plugin.hook_data_post(() => {
-        assert.ok(
-          this.connection.transaction.results.get('clamd').skip.length > 0,
-        )
-        done()
-      }, this.connection)
+      await new Promise((resolve) => {
+        this.plugin.hook_data_post(() => {
+          assert.ok(
+            this.connection.transaction.results.get('clamd').skip.length > 0,
+          )
+          resolve()
+        }, this.connection)
+      })
     })
 
-    it('skip authenticated', (t, done) => {
+    it('skip authenticated', async () => {
       this.connection.notes.auth_user = 'user'
       this.plugin.cfg.check.authenticated = false
-      this.plugin.hook_data_post(() => {
-        assert.ok(
-          this.connection.transaction.results.get('clamd').skip.length > 0,
-        )
-        done()
-      }, this.connection)
+      await new Promise((resolve) => {
+        this.plugin.hook_data_post(() => {
+          assert.ok(
+            this.connection.transaction.results.get('clamd').skip.length > 0,
+          )
+          resolve()
+        }, this.connection)
+      })
     })
 
-    it('checks local IP', (t, done) => {
+    it('checks local IP', async () => {
       this.connection.remote.is_local = true
       this.plugin.cfg.check.local_ip = true
-      this.plugin.hook_data_post(() => {
-        assert.ok(
-          this.connection.transaction.results.get('clamd').skip.length === 0,
-        )
-        done()
-      }, this.connection)
+      await new Promise((resolve) => {
+        this.plugin.hook_data_post(() => {
+          assert.ok(
+            this.connection.transaction.results.get('clamd').skip.length === 0,
+          )
+          resolve()
+        }, this.connection)
+      })
     })
 
-    it('skips local IP', (t, done) => {
+    it('skips local IP', async () => {
       this.connection.remote.is_local = true
       this.plugin.cfg.check.local_ip = false
-      this.plugin.hook_data_post(() => {
-        assert.ok(
-          this.connection.transaction.results.get('clamd').skip.length > 0,
-        )
-        done()
-      }, this.connection)
+      await new Promise((resolve) => {
+        this.plugin.hook_data_post(() => {
+          assert.ok(
+            this.connection.transaction.results.get('clamd').skip.length > 0,
+          )
+          resolve()
+        }, this.connection)
+      })
     })
 
-    it('checks private IP', (t, done) => {
+    it('checks private IP', async () => {
       this.connection.remote.is_private = true
       this.plugin.cfg.check.private_ip = true
-      this.plugin.hook_data_post(() => {
-        assert.ok(
-          this.connection.transaction.results.get('clamd').skip.length === 0,
-        )
-        done()
-      }, this.connection)
+      await new Promise((resolve) => {
+        this.plugin.hook_data_post(() => {
+          assert.ok(
+            this.connection.transaction.results.get('clamd').skip.length === 0,
+          )
+          resolve()
+        }, this.connection)
+      })
     })
 
-    it('skips private IP', (t, done) => {
+    it('skips private IP', async () => {
       this.connection.remote.is_private = true
       this.plugin.cfg.check.private_ip = false
-      this.plugin.hook_data_post(() => {
-        assert.ok(
-          this.connection.transaction.results.get('clamd').skip.length > 0,
-        )
-        done()
-      }, this.connection)
+      await new Promise((resolve) => {
+        this.plugin.hook_data_post(() => {
+          assert.ok(
+            this.connection.transaction.results.get('clamd').skip.length > 0,
+          )
+          resolve()
+        }, this.connection)
+      })
     })
 
-    it('checks public ip', (t, done) => {
-      this.plugin.hook_data_post(() => {
-        assert.ok(
-          this.connection.transaction.results.get('clamd').skip.length === 0,
-        )
-        done()
-      }, this.connection)
+    it('checks public ip', async () => {
+      await new Promise((resolve) => {
+        this.plugin.hook_data_post(() => {
+          assert.ok(
+            this.connection.transaction.results.get('clamd').skip.length === 0,
+          )
+          resolve()
+        }, this.connection)
+      })
     })
 
-    it('skip localhost if check.local_ip = false and check.private_ip = true', (t, done) => {
+    it('skip localhost if check.local_ip = false and check.private_ip = true', async () => {
       this.connection.remote.is_local = true
       this.connection.remote.is_private = true
 
       this.plugin.cfg.check.local_ip = false
       this.plugin.cfg.check.private_ip = true
 
-      this.plugin.hook_data_post(() => {
-        assert.ok(
-          this.connection.transaction.results.get('clamd').skip.length > 0,
-        )
-        done()
-      }, this.connection)
+      await new Promise((resolve) => {
+        this.plugin.hook_data_post(() => {
+          assert.ok(
+            this.connection.transaction.results.get('clamd').skip.length > 0,
+          )
+          resolve()
+        }, this.connection)
+      })
     })
 
-    it('checks localhost if check.local_ip = true and check.private_ip = false', (t, done) => {
+    it('checks localhost if check.local_ip = true and check.private_ip = false', async () => {
       this.connection.remote.is_local = true
       this.connection.remote.is_private = true
 
       this.plugin.cfg.check.local_ip = true
       this.plugin.cfg.check.private_ip = false
 
-      this.plugin.hook_data_post(() => {
-        assert.ok(
-          this.connection.transaction.results.get('clamd').skip.length === 0,
-        )
-        done()
-      }, this.connection)
+      await new Promise((resolve) => {
+        this.plugin.hook_data_post(() => {
+          assert.ok(
+            this.connection.transaction.results.get('clamd').skip.length === 0,
+          )
+          resolve()
+        }, this.connection)
+      })
     })
 
-    it('message too big', (t, done) => {
+    it('message too big', async () => {
       this.connection.transaction.data_bytes = 513
       this.plugin.cfg.main.max_size = 512
 
-      this.plugin.hook_data_post(() => {
-        assert.ok(
-          this.connection.transaction.results.get('clamd').skip.length > 0,
-        )
-        done()
-      }, this.connection)
+      await new Promise((resolve) => {
+        this.plugin.hook_data_post(() => {
+          assert.ok(
+            this.connection.transaction.results.get('clamd').skip.length > 0,
+          )
+          resolve()
+        }, this.connection)
+      })
     })
   })
 
   describe('send_clamd_predata', () => {
     beforeEach(_set_up)
 
-    it('writes the proper commands to clamd socket', (t, done) => {
-      const server = new net.createServer((socket) => {
-        socket.on('data', (data) => {
-          assert.ok(
-            data.toString(),
-            `zINSTREAM\0Received: from Haraka clamd plugin\r\n`,
-          )
-          // console.log(`${data.toString()}`)
-        })
-        socket.on('end', () => {
-          done()
-        })
-      })
-
-      server.listen(65535, () => {
-        const client = new net.Socket()
-        client.connect(65535, () => {
-          this.plugin.send_clamd_predata(client, () => {
-            client.end()
+    it('writes the proper commands to clamd socket', async () => {
+      await new Promise((resolve) => {
+        const server = new net.createServer((socket) => {
+          socket.on('data', (data) => {
+            assert.ok(
+              data.toString(),
+              `zINSTREAM\0Received: from Haraka clamd plugin\r\n`,
+            )
+            // console.log(`${data.toString()}`)
+          })
+          socket.on('end', () => {
+            resolve()
           })
         })
-      })
 
-      server.unref()
+        server.listen(65535, () => {
+          const client = new net.Socket()
+          client.connect(65535, () => {
+            this.plugin.send_clamd_predata(client, () => {
+              client.end()
+            })
+          })
+        })
+
+        server.unref()
+      })
     })
   })
 })
