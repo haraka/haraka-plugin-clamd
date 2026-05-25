@@ -1,6 +1,6 @@
 'use strict'
 
-const assert = require('node:assert')
+const assert = require('node:assert/strict')
 const net = require('node:net')
 const os = require('node:os')
 const path = require('node:path')
@@ -11,64 +11,53 @@ const fixtures = require('haraka-test-fixtures')
 const _set_up = () => {
   this.plugin = new fixtures.plugin('clamd')
   this.plugin.register()
-
   this.connection = fixtures.connection.createConnection()
   this.connection.init_transaction()
 }
+
+const runHook = (call) => new Promise((resolve) => call((...a) => resolve(a)))
+const results = () => this.connection.transaction.results.get('clamd')
+const skipLen = () => results().skip.length
 
 describe('plugins/clamd', () => {
   describe('load_clamd_ini', () => {
     beforeEach(_set_up)
 
     it('none', () => {
-      assert.deepEqual([], this.plugin.skip_list)
+      assert.deepEqual(this.plugin.skip_list, [])
     })
 
     it('defaults', () => {
       const cfg = this.plugin.cfg.main
-      assert.equal('localhost:3310', cfg.clamd_socket)
-      assert.equal(30, cfg.timeout)
-      assert.equal(10, cfg.connect_timeout)
-      assert.equal(26214400, cfg.max_size)
-      assert.equal(false, cfg.only_with_attachments)
-      assert.equal(false, cfg.randomize_host_order)
+      assert.equal(cfg.clamd_socket, 'localhost:3310')
+      assert.equal(cfg.timeout, 30)
+      assert.equal(cfg.connect_timeout, 10)
+      assert.equal(cfg.max_size, 26214400)
+      assert.equal(cfg.only_with_attachments, false)
+      assert.equal(cfg.randomize_host_order, false)
     })
 
     it('reject opts', () => {
-      assert.equal(true, this.plugin.rejectRE.test('Encrypted.'))
-      assert.equal(true, this.plugin.rejectRE.test('Heuristics.Structured.'))
-      assert.equal(
-        true,
-        this.plugin.rejectRE.test('Heuristics.Structured.CreditCardNumber'),
-      )
-      assert.equal(true, this.plugin.rejectRE.test('Broken.Executable.'))
-      assert.equal(true, this.plugin.rejectRE.test('PUA.'))
-      assert.equal(
-        true,
-        this.plugin.rejectRE.test('Heuristics.OLE2.ContainsMacros'),
-      )
-      assert.equal(true, this.plugin.rejectRE.test('Heuristics.Safebrowsing.'))
-      assert.equal(
-        true,
-        this.plugin.rejectRE.test(
-          'Heuristics.Safebrowsing.Suspected-phishing_safebrowsing.clamav.net',
-        ),
-      )
-      assert.equal(
-        true,
-        this.plugin.rejectRE.test('Sanesecurity.Junk.50402.UNOFFICIAL'),
-      )
-      assert.equal(
-        false,
-        this.plugin.rejectRE.test('Sanesecurity.UNOFFICIAL.oops'),
-      )
-      assert.equal(false, this.plugin.rejectRE.test('Phishing'))
-      assert.equal(
-        false,
-        this.plugin.rejectRE.test('Heuristics.Phishing.Email.SpoofedDomain'),
-      )
-      assert.equal(false, this.plugin.rejectRE.test('Suspect.Executable'))
-      assert.equal(false, this.plugin.rejectRE.test('MattWuzHere'))
+      const yes = [
+        'Encrypted.',
+        'Heuristics.Structured.',
+        'Heuristics.Structured.CreditCardNumber',
+        'Broken.Executable.',
+        'PUA.',
+        'Heuristics.OLE2.ContainsMacros',
+        'Heuristics.Safebrowsing.',
+        'Heuristics.Safebrowsing.Suspected-phishing_safebrowsing.clamav.net',
+        'Sanesecurity.Junk.50402.UNOFFICIAL',
+      ]
+      const no = [
+        'Sanesecurity.UNOFFICIAL.oops',
+        'Phishing',
+        'Heuristics.Phishing.Email.SpoofedDomain',
+        'Suspect.Executable',
+        'MattWuzHere',
+      ]
+      for (const v of yes) assert.ok(this.plugin.rejectRE.test(v), v)
+      for (const v of no) assert.ok(!this.plugin.rejectRE.test(v), v)
     })
   })
 
@@ -90,182 +79,111 @@ describe('plugins/clamd', () => {
   describe('hook_data', () => {
     beforeEach(_set_up)
 
+    const runData = () =>
+      runHook((next) => this.plugin.hook_data(next, this.connection))
+
     it('attachment hook flags clamd_found_attachment', async () => {
       this.plugin.cfg.main.only_with_attachments = true
       this.connection.transaction.attachment_hooks = (cb) =>
         cb('application/pdf', 'evil.pdf', {})
-      await new Promise((resolve) => {
-        this.plugin.hook_data(() => {
-          assert.equal(
-            this.connection.transaction.notes.clamd_found_attachment,
-            true,
-          )
-          resolve()
-        }, this.connection)
-      })
+      await runData()
+      assert.equal(
+        this.connection.transaction.notes.clamd_found_attachment,
+        true,
+      )
     })
 
     it('only_with_attachments, false', async () => {
-      assert.equal(false, this.plugin.cfg.main.only_with_attachments)
-      await new Promise((resolve) => {
-        this.plugin.hook_data(() => {
-          assert.equal(false, this.connection.transaction.parse_body)
-          resolve()
-        }, this.connection)
-      })
+      assert.equal(this.plugin.cfg.main.only_with_attachments, false)
+      await runData()
+      assert.equal(this.connection.transaction.parse_body, false)
     })
 
     it('only_with_attachments, true', async () => {
       this.plugin.cfg.main.only_with_attachments = true
       this.connection.transaction.attachment_hooks = () => {}
-      await new Promise((resolve) => {
-        this.plugin.hook_data(() => {
-          assert.equal(true, this.plugin.cfg.main.only_with_attachments)
-          assert.equal(true, this.connection.transaction.parse_body)
-          resolve()
-        }, this.connection)
-      })
+      await runData()
+      assert.equal(this.plugin.cfg.main.only_with_attachments, true)
+      assert.equal(this.connection.transaction.parse_body, true)
     })
   })
 
   describe('hook_data_post', () => {
     beforeEach(_set_up)
 
+    const runPost = () =>
+      runHook((next) => this.plugin.hook_data_post(next, this.connection))
+
     it('skip attachment', async () => {
       this.connection.transaction.notes = { clamd_found_attachment: false }
       this.plugin.cfg.main.only_with_attachments = true
-      await new Promise((resolve) => {
-        this.plugin.hook_data_post(() => {
-          assert.ok(
-            this.connection.transaction.results.get('clamd').skip.length > 0,
-          )
-          resolve()
-        }, this.connection)
-      })
+      await runPost()
+      assert.ok(skipLen() > 0)
     })
 
     it('skip authenticated', async () => {
       this.connection.notes.auth_user = 'user'
       this.plugin.cfg.check.authenticated = false
-      await new Promise((resolve) => {
-        this.plugin.hook_data_post(() => {
-          assert.ok(
-            this.connection.transaction.results.get('clamd').skip.length > 0,
-          )
-          resolve()
-        }, this.connection)
-      })
+      await runPost()
+      assert.ok(skipLen() > 0)
     })
 
     it('checks local IP', async () => {
       this.connection.remote.is_local = true
       this.plugin.cfg.check.local_ip = true
-      await new Promise((resolve) => {
-        this.plugin.hook_data_post(() => {
-          assert.ok(
-            this.connection.transaction.results.get('clamd').skip.length === 0,
-          )
-          resolve()
-        }, this.connection)
-      })
+      await runPost()
+      assert.equal(skipLen(), 0)
     })
 
     it('skips local IP', async () => {
       this.connection.remote.is_local = true
       this.plugin.cfg.check.local_ip = false
-      await new Promise((resolve) => {
-        this.plugin.hook_data_post(() => {
-          assert.ok(
-            this.connection.transaction.results.get('clamd').skip.length > 0,
-          )
-          resolve()
-        }, this.connection)
-      })
+      await runPost()
+      assert.ok(skipLen() > 0)
     })
 
     it('checks private IP', async () => {
       this.connection.remote.is_private = true
       this.plugin.cfg.check.private_ip = true
-      await new Promise((resolve) => {
-        this.plugin.hook_data_post(() => {
-          assert.ok(
-            this.connection.transaction.results.get('clamd').skip.length === 0,
-          )
-          resolve()
-        }, this.connection)
-      })
+      await runPost()
+      assert.equal(skipLen(), 0)
     })
 
     it('skips private IP', async () => {
       this.connection.remote.is_private = true
       this.plugin.cfg.check.private_ip = false
-      await new Promise((resolve) => {
-        this.plugin.hook_data_post(() => {
-          assert.ok(
-            this.connection.transaction.results.get('clamd').skip.length > 0,
-          )
-          resolve()
-        }, this.connection)
-      })
+      await runPost()
+      assert.ok(skipLen() > 0)
     })
 
     it('checks public ip', async () => {
-      await new Promise((resolve) => {
-        this.plugin.hook_data_post(() => {
-          assert.ok(
-            this.connection.transaction.results.get('clamd').skip.length === 0,
-          )
-          resolve()
-        }, this.connection)
-      })
+      await runPost()
+      assert.equal(skipLen(), 0)
     })
 
     it('skip localhost if check.local_ip = false and check.private_ip = true', async () => {
       this.connection.remote.is_local = true
       this.connection.remote.is_private = true
-
       this.plugin.cfg.check.local_ip = false
       this.plugin.cfg.check.private_ip = true
-
-      await new Promise((resolve) => {
-        this.plugin.hook_data_post(() => {
-          assert.ok(
-            this.connection.transaction.results.get('clamd').skip.length > 0,
-          )
-          resolve()
-        }, this.connection)
-      })
+      await runPost()
+      assert.ok(skipLen() > 0)
     })
 
     it('checks localhost if check.local_ip = true and check.private_ip = false', async () => {
       this.connection.remote.is_local = true
       this.connection.remote.is_private = true
-
       this.plugin.cfg.check.local_ip = true
       this.plugin.cfg.check.private_ip = false
-
-      await new Promise((resolve) => {
-        this.plugin.hook_data_post(() => {
-          assert.ok(
-            this.connection.transaction.results.get('clamd').skip.length === 0,
-          )
-          resolve()
-        }, this.connection)
-      })
+      await runPost()
+      assert.equal(skipLen(), 0)
     })
 
     it('message too big', async () => {
       this.connection.transaction.data_bytes = 513
       this.plugin.cfg.main.max_size = 512
-
-      await new Promise((resolve) => {
-        this.plugin.hook_data_post(() => {
-          assert.ok(
-            this.connection.transaction.results.get('clamd').skip.length > 0,
-          )
-          resolve()
-        }, this.connection)
-      })
+      await runPost()
+      assert.ok(skipLen() > 0)
     })
   })
 
@@ -274,28 +192,21 @@ describe('plugins/clamd', () => {
 
     it('writes the proper commands to clamd socket', async () => {
       await new Promise((resolve) => {
-        const server = new net.createServer((socket) => {
+        const server = net.createServer((socket) => {
           socket.on('data', (data) => {
             assert.ok(
               data.toString(),
               `zINSTREAM\0Received: from Haraka clamd plugin\r\n`,
             )
-            // console.log(`${data.toString()}`)
           })
-          socket.on('end', () => {
-            resolve()
-          })
+          socket.on('end', resolve)
         })
-
         server.listen(65535, () => {
           const client = new net.Socket()
           client.connect(65535, () => {
-            this.plugin.send_clamd_predata(client, () => {
-              client.end()
-            })
+            this.plugin.send_clamd_predata(client, () => client.end())
           })
         })
-
         server.unref()
       })
     })
@@ -332,24 +243,44 @@ describe('plugins/clamd', () => {
   describe('hook_data_post (full clamd exchange)', () => {
     let server
 
-    const startClamd = (reply, cb) => {
-      server = net.createServer((s) => {
-        s.on('data', () => {})
-        s.on('end', () => s.end(reply))
+    const primeTxn = () =>
+      new Promise((done) => {
+        _set_up()
+        const txn = this.connection.transaction
+        txn.message_stream.add_line('Subject: hi\r\n')
+        txn.message_stream.add_line('\r\n')
+        txn.message_stream.add_line('body\r\n')
+        txn.message_stream.add_line_end(done)
       })
-      server.listen(0, '127.0.0.1', () => cb(server.address().port))
-    }
 
-    const primeTxn = (done) => {
-      this.plugin = new fixtures.plugin('clamd')
-      this.plugin.register()
-      this.connection = fixtures.connection.createConnection()
-      this.connection.init_transaction()
-      const txn = this.connection.transaction
-      txn.message_stream.add_line('Subject: hi\r\n')
-      txn.message_stream.add_line('\r\n')
-      txn.message_stream.add_line('body\r\n')
-      txn.message_stream.add_line_end(done)
+    const startClamd = (reply, host = '127.0.0.1') =>
+      new Promise((resolve) => {
+        server = net.createServer((s) => {
+          s.on('data', () => {})
+          s.on('end', () => s.end(reply))
+        })
+        if (host.startsWith('/')) {
+          server.listen(host, () => resolve(host))
+        } else {
+          server.listen(0, host, () => {
+            const { port } = server.address()
+            const fmt = host.includes(':')
+              ? `[${host}]:${port}`
+              : `${host}:${port}`
+            resolve(fmt)
+          })
+        }
+      })
+
+    const run = async ({ reply, host, tweak } = {}) => {
+      await primeTxn()
+      if (reply !== undefined) {
+        this.plugin.cfg.main.clamd_socket = await startClamd(reply, host)
+      }
+      tweak?.(this.plugin, this.connection)
+      return runHook((next) =>
+        this.plugin.hook_data_post(next, this.connection),
+      )
     }
 
     afterEach((t, done) => {
@@ -359,49 +290,36 @@ describe('plugins/clamd', () => {
       done()
     })
 
-    const run = (reply, tweak) =>
-      new Promise((resolve) =>
-        primeTxn(() =>
-          startClamd(reply, (port) => {
-            this.plugin.cfg.main.clamd_socket = `127.0.0.1:${port}`
-            tweak?.(this.plugin)
-            this.plugin.hook_data_post((...a) => resolve(a), this.connection)
-          }),
-        ),
-      )
-
     it('passes a clean message', async () => {
-      const args = await run('stream: OK\n')
+      const args = await run({ reply: 'stream: OK\n' })
       assert.deepEqual(args, [])
-      assert.ok(
-        this.connection.transaction.results.get('clamd').pass.includes('clean'),
-      )
+      assert.ok(results().pass.includes('clean'))
     })
 
     it('DENYs an infected message', async () => {
-      const [code, msg] = await run('stream: Eicar-Test-Signature FOUND\n')
+      const [code, msg] = await run({
+        reply: 'stream: Eicar-Test-Signature FOUND\n',
+      })
       assert.equal(code, DENY)
       assert.match(msg, /infected with Eicar-Test-Signature/)
     })
 
     it('accepts a virus when reject.virus is false', async () => {
-      const args = await run('stream: Eicar-Test FOUND\n', (p) => {
-        p.cfg.reject.virus = false
+      const args = await run({
+        reply: 'stream: Eicar-Test FOUND\n',
+        tweak: (p) => {
+          p.cfg.reject.virus = false
+        },
       })
       assert.deepEqual(args, [])
-      assert.ok(
-        this.connection.transaction.results
-          .get('clamd')
-          .fail.includes('Eicar-Test'),
-      )
+      assert.ok(results().fail.includes('Eicar-Test'))
     })
 
     it('continues past a clamd size-limit error', async () => {
-      const args = await run('INSTREAM size limit exceeded\n')
+      const args = await run({ reply: 'INSTREAM size limit exceeded\n' })
       assert.deepEqual(args, [])
       assert.ok(
-        this.connection.transaction.results
-          .get('clamd')
+        results()
           .err.join()
           .match(/size limit/),
       )
@@ -409,7 +327,9 @@ describe('plugins/clamd', () => {
 
     it('virus with reject-option disabled -> header + accept', async () => {
       // Phishing is disabled by default: matches allRE but not rejectRE
-      const args = await run('stream: Heuristics.Phishing.Email FOUND\n')
+      const args = await run({
+        reply: 'stream: Heuristics.Phishing.Email FOUND\n',
+      })
       assert.deepEqual(args, [])
       assert.match(
         this.connection.transaction.header.get('X-Haraka-Virus'),
@@ -419,31 +339,26 @@ describe('plugins/clamd', () => {
 
     it('connects over a unix domain socket', async () => {
       const sock = path.join(os.tmpdir(), `clamd-test-${process.pid}.sock`)
-      const args = await new Promise((resolve) =>
-        primeTxn(() => {
-          server = net.createServer((s) => {
-            s.on('data', () => {})
-            s.on('end', () => s.end('stream: OK\n'))
-          })
-          server.listen(sock, () => {
-            this.plugin.cfg.main.clamd_socket = sock
-            this.plugin.hook_data_post((...a) => resolve(a), this.connection)
-          })
-        }),
-      )
+      const args = await run({ reply: 'stream: OK\n', host: sock })
       assert.deepEqual(args, [])
     })
 
     it('skip_list_exclude match -> DENY', async () => {
-      const [code] = await run('stream: Eicar-Test FOUND\n', (p) => {
-        p.skip_list_exclude = [/Eicar/]
+      const [code] = await run({
+        reply: 'stream: Eicar-Test FOUND\n',
+        tweak: (p) => {
+          p.skip_list_exclude = [/Eicar/]
+        },
       })
       assert.equal(code, DENY)
     })
 
     it('skip_list match -> header + accept', async () => {
-      const args = await run('stream: Eicar-Test FOUND\n', (p) => {
-        p.skip_list = [/Eicar/]
+      const args = await run({
+        reply: 'stream: Eicar-Test FOUND\n',
+        tweak: (p) => {
+          p.skip_list = [/Eicar/]
+        },
       })
       assert.deepEqual(args, [])
       assert.match(
@@ -453,64 +368,49 @@ describe('plugins/clamd', () => {
     })
 
     it('unknown clamd result -> DENYSOFT', async () => {
-      const [code] = await run('mystery response\n', (p) => {
-        p.cfg.reject.error = true
+      const [code] = await run({
+        reply: 'mystery response\n',
+        tweak: (p) => {
+          p.cfg.reject.error = true
+        },
       })
       assert.equal(code, DENYSOFT)
     })
 
     it('honors randomize_host_order across a host list', async () => {
-      const args = await new Promise((resolve) =>
-        primeTxn(() =>
-          startClamd('stream: OK\n', (port) => {
-            this.plugin.cfg.main.clamd_socket = `127.0.0.1:${port} 127.0.0.1:${port}`
-            this.plugin.cfg.main.randomize_host_order = true
-            this.plugin.hook_data_post((...a) => resolve(a), this.connection)
-          }),
-        ),
-      )
+      const args = await run({
+        reply: 'stream: OK\n',
+        tweak: (p) => {
+          p.cfg.main.clamd_socket = `${p.cfg.main.clamd_socket} ${p.cfg.main.clamd_socket}`
+          p.cfg.main.randomize_host_order = true
+        },
+      })
       assert.deepEqual(args, [])
     })
 
     it('skips relaying senders when check.relay=false', async () => {
-      const args = await new Promise((resolve) =>
-        primeTxn(() => {
-          this.connection.relaying = true
-          this.plugin.cfg.check.relay = false
-          this.plugin.hook_data_post((...a) => resolve(a), this.connection)
-        }),
-      )
+      const args = await run({
+        tweak: (p, c) => {
+          c.relaying = true
+          p.cfg.check.relay = false
+        },
+      })
       assert.deepEqual(args, [])
-      assert.ok(
-        this.connection.transaction.results.get('clamd').skip.includes('relay'),
-      )
+      assert.ok(results().skip.includes('relay'))
     })
 
     it('connects to an IPv6 literal host', async () => {
-      const args = await new Promise((resolve) =>
-        primeTxn(() => {
-          server = net.createServer((s) => {
-            s.on('data', () => {})
-            s.on('end', () => s.end('stream: OK\n'))
-          })
-          server.listen(0, '::1', () => {
-            const { port } = server.address()
-            this.plugin.cfg.main.clamd_socket = `[::1]:${port}`
-            this.plugin.hook_data_post((...a) => resolve(a), this.connection)
-          })
-        }),
-      )
+      const args = await run({ reply: 'stream: OK\n', host: '::1' })
       assert.deepEqual(args, [])
     })
 
     it('DENYSOFTs when no clamd host is reachable', async () => {
-      const args = await new Promise((resolve) =>
-        primeTxn(() => {
-          this.plugin.cfg.main.clamd_socket = '127.0.0.1:1'
-          this.plugin.cfg.reject.error = true
-          this.plugin.hook_data_post((...a) => resolve(a), this.connection)
-        }),
-      )
+      const args = await run({
+        tweak: (p) => {
+          p.cfg.main.clamd_socket = '127.0.0.1:1'
+          p.cfg.reject.error = true
+        },
+      })
       assert.equal(args[0], DENYSOFT)
     })
   })
