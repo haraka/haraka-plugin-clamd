@@ -4,18 +4,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Unreleased
 
+### [1.0.3] - 2026-05-24
+
+- fix: declare `check.relay` in the booleans list
+- fix(excludes): `!/regex/` exclude entries now strip the trailing `/`
 - refactor(hook_data_post): into smaller functions
 - refactor(load_excludes): collapsed into a loop plus a helper
 - refactor(should_check): strict equality and a reasons table
-- fix: declare `check.relay` in the booleans list
-- dep(@haraka/eslint): upgrade to v3
-
-### [1.0.3] - 2026-05-24
-
-- fix(excludes): `!/regex/` exclude entries now strip the trailing `/`
 - refactor: forEach -> for..of
-- remove unneeded done callbacks
-- update triggers (#3)
+- refactor: remove unneeded done callbacks
+- ci: update triggers #3
+- dep(@haraka/eslint): upgrade to v3
 
 ### [1.0.2] - 2025-01-30
 
