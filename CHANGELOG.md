@@ -4,6 +4,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Unreleased
 
+- refactor(hook_data_post): into smaller functions
+- refactor(load_excludes): collapsed into a loop plus a helper
+- refactor(should_check): strict equality and a reasons table
+- fix: declare `check.relay` in the booleans list
+
 ### [1.0.3] - 2026-05-24
 
 - fix(excludes): `!/regex/` exclude entries now strip the trailing `/`
