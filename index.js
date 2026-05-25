@@ -18,9 +18,10 @@ exports.load_excludes = function () {
     switch (element[0]) {
       case '!':
         if (element[1] === '/') {
-          // Regexp exclude
+          // Regexp exclude (e.g. !/foo/) — strip leading "!/" and the
+          // trailing "/" so the compiled pattern is just `foo`.
           try {
-            re = new RegExp(element.substr(2, element.length - 2), 'i')
+            re = new RegExp(element.substr(2, element.length - 3), 'i')
             new_skip_list_exclude.push(re)
           } catch (e) {
             this.logerror(`${e.message} (entry: ${element})`)
@@ -120,11 +121,11 @@ exports.load_clamd_ini = function () {
 
   const all_reject_opts = []
   const enabled_reject_opts = []
-  Object.keys(rejectPatterns).forEach((opt) => {
+  for (const opt of Object.keys(rejectPatterns)) {
     all_reject_opts.push(rejectPatterns[opt])
-    if (!this.cfg.reject[opt]) return
+    if (!this.cfg.reject[opt]) continue
     enabled_reject_opts.push(rejectPatterns[opt])
-  })
+  }
 
   if (enabled_reject_opts.length) {
     this.allRE = new RegExp(all_reject_opts.join('|'))
