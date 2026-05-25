@@ -11,54 +11,29 @@ exports.load_excludes = function () {
     this.load_excludes()
   })
 
-  const new_skip_list_exclude = []
-  const new_skip_list = []
+  const exclude = []
+  const skip = []
   for (const element of list) {
-    let re
-    switch (element[0]) {
-      case '!':
-        if (element[1] === '/') {
-          // Regexp exclude (e.g. !/foo/) — strip leading "!/" and the
-          // trailing "/" so the compiled pattern is just `foo`.
-          try {
-            re = new RegExp(element.substr(2, element.length - 3), 'i')
-            new_skip_list_exclude.push(re)
-          } catch (e) {
-            this.logerror(`${e.message} (entry: ${element})`)
-          }
-        } else {
-          // Wildcard exclude
-          try {
-            re = new RegExp(utils.wildcard_to_regexp(element.substr(1)), 'i')
-            new_skip_list_exclude.push(re)
-          } catch (e) {
-            this.logerror(`${e.message} (entry: ${element})`)
-          }
-        }
-        break
-      case '/':
-        // Regexp skip
-        try {
-          re = new RegExp(element.substr(1, element.length - 2), 'i')
-          new_skip_list.push(re)
-        } catch (e) {
-          this.logerror(`${e.message} (entry: ${element})`)
-        }
-        break
-      default:
-        // Wildcard skip
-        try {
-          re = new RegExp(utils.wildcard_to_regexp(element), 'i')
-          new_skip_list.push(re)
-        } catch (e) {
-          this.logerror(`${e.message} (entry: ${element})`)
-        }
+    try {
+      const { negated, re } = parse_exclude(element)
+      ;(negated ? exclude : skip).push(re)
+    } catch (e) {
+      this.logerror(`${e.message} (entry: ${element})`)
     }
   }
 
-  // Make the new lists visible
-  this.skip_list_exclude = new_skip_list_exclude
-  this.skip_list = new_skip_list
+  this.skip_list_exclude = exclude
+  this.skip_list = skip
+}
+
+function parse_exclude(element) {
+  const negated = element[0] === '!'
+  const body = negated ? element.slice(1) : element
+  const re =
+    body[0] === '/'
+      ? new RegExp(body.slice(1, -1), 'i')
+      : new RegExp(utils.wildcard_to_regexp(body), 'i')
+  return { negated, re }
 }
 
 exports.load_clamd_ini = function () {
@@ -71,8 +46,6 @@ exports.load_clamd_ini = function () {
         '+reject.virus',
         '+reject.error',
 
-        // clamd options that are disabled by default. If admin enables
-        // them for clamd, Haraka should reject by default.
         '+reject.Broken.Executable',
         '+reject.Structured', // DLP options
         '+reject.Encrypted',
@@ -81,11 +54,11 @@ exports.load_clamd_ini = function () {
         '+reject.Safebrowsing',
         '+reject.UNOFFICIAL',
 
-        // clamd.conf options enabled by default, but prone to false
-        // positives.
+        // prone to false positives.
         '-reject.Phishing',
 
         '+check.authenticated',
+        '+check.relay',
         '+check.private_ip',
         '+check.local_ip',
       ],
@@ -158,76 +131,139 @@ exports.hook_data = function (next, connection) {
   next()
 }
 
-exports.hook_data_post = function (next, connection) {
+exports.hook_data_post = async function (next, connection) {
   const plugin = this
   if (!plugin.should_check(connection)) return next()
 
   const txn = connection.transaction
   const { cfg } = plugin
-  // Do we need to run?
+
   if (cfg.main.only_with_attachments && !txn.notes.clamd_found_attachment) {
     connection.logdebug(plugin, 'skipping: no attachments found')
     txn.results.add(plugin, { skip: 'no attachments' })
     return next()
   }
 
-  // Limit message size
   if (txn.data_bytes > cfg.main.max_size) {
     txn.results.add(plugin, { skip: 'exceeds max size', emit: true })
     return next()
   }
 
   const hosts = cfg.main.clamd_socket.split(/[,; ]+/)
+  if (cfg.main.randomize_host_order) hosts.sort(() => 0.5 - Math.random())
 
-  if (cfg.main.randomize_host_order) {
-    hosts.sort(() => 0.5 - Math.random())
+  for (let i = 0; i < hosts.length; i++) {
+    const host = hosts[i]
+    const isLast = i === hosts.length - 1
+    connection.logdebug(plugin, `trying host: ${host}`)
+
+    const outcome = await scan_against(plugin, connection, txn, host)
+
+    if (outcome.kind === 'connect_failed') {
+      connection.logerror(
+        plugin,
+        `Connection to ${host} failed: ${outcome.reason}`,
+      )
+      continue
+    }
+
+    if (outcome.kind === 'post_connect_error') {
+      if (!isLast) {
+        connection.logwarn(plugin, `error on host ${host}: ${outcome.reason}`)
+        continue
+      }
+      txn.results.add(plugin, {
+        err: `error on host ${host}: ${outcome.reason}`,
+      })
+      if (!cfg.reject.error) return next()
+      return next(DENYSOFT, 'Virus scanner error')
+    }
+
+    if (outcome.kind === 'scan_timeout') {
+      txn.results.add(plugin, { err: 'clamd timed out' })
+      if (!cfg.reject.error) return next()
+      return next(DENYSOFT, 'Virus scanner timed out')
+    }
+
+    const parsed = parse_clamd_result(outcome.line)
+
+    if (parsed.kind === 'clean') {
+      txn.results.add(plugin, { pass: 'clean', emit: true })
+      return next()
+    }
+
+    if (parsed.kind === 'size_limit') {
+      txn.results.add(plugin, {
+        err: 'INSTREAM size limit exceeded. Check StreamMaxLength in clamd.conf',
+      })
+      return next()
+    }
+
+    if (parsed.kind === 'virus') {
+      txn.results.add(plugin, { fail: parsed.virus || 'virus', emit: true })
+      const decision = decide_virus_action(plugin, parsed.virus)
+      if (decision.matched_exclusion) {
+        connection.logwarn(plugin, `${parsed.virus} matches exclusion`)
+      }
+      if (decision.action === 'pass') {
+        if (decision.tag) txn.add_header('X-Haraka-Virus', parsed.virus)
+        return next()
+      }
+      return next(DENY, `Message is infected with ${parsed.virus || 'UNKNOWN'}`)
+    }
+
+    // unknown result
+    if (!isLast) {
+      connection.logwarn(
+        plugin,
+        `unknown result: '${outcome.line}' from host ${host}`,
+      )
+      continue
+    }
+    txn.results.add(plugin, {
+      err: `unknown result: '${outcome.line}' from host ${host}`,
+    })
+    if (!cfg.reject.error) return next()
+    return next(DENYSOFT, 'Error running virus scanner')
   }
 
-  function try_next_host() {
-    let connected = false
-    if (!hosts.length) {
-      if (txn) txn.results.add(plugin, { err: 'connecting' })
-      if (!plugin.cfg.reject.error) return next()
-      return next(DENYSOFT, 'Error connecting to virus scanner')
-    }
-    const host = hosts.shift()
-    connection.logdebug(plugin, `trying host: ${host}`)
+  txn.results.add(plugin, { err: 'connecting' })
+  if (!cfg.reject.error) return next()
+  return next(DENYSOFT, 'Error connecting to virus scanner')
+}
+
+function scan_against(plugin, connection, txn, host) {
+  return new Promise((resolve) => {
+    const { cfg } = plugin
     const socket = new net.Socket()
     net_utils.add_line_processor(socket)
 
+    let connected = false
+    let lastLine = ''
+    let settled = false
+    const settle = (outcome) => {
+      if (settled) return
+      settled = true
+      resolve(outcome)
+    }
+
+    socket.setTimeout((cfg.main.connect_timeout || 10) * 1000)
+
     socket.on('timeout', () => {
       socket.destroy()
-      if (!connected) {
-        connection.logerror(plugin, `Timeout connecting to ${host}`)
-        return try_next_host()
-      }
-      if (txn) txn.results.add(plugin, { err: 'clamd timed out' })
-      if (!plugin.cfg.reject.error) return next()
-      return next(DENYSOFT, 'Virus scanner timed out')
+      settle(
+        connected
+          ? { kind: 'scan_timeout' }
+          : { kind: 'connect_failed', reason: 'timeout' },
+      )
     })
 
     socket.on('error', (err) => {
       socket.destroy()
-      if (!connected) {
-        connection.logerror(
-          plugin,
-          `Connection to ${host} failed: ${err.message}`,
-        )
-        return try_next_host()
-      }
-
-      // If an error occurred after connection and there are other hosts left to try,
-      // then try those before returning DENYSOFT.
-      if (hosts.length) {
-        connection.logwarn(plugin, `error on host ${host}: ${err.message}`)
-        return try_next_host()
-      }
-      if (txn)
-        txn.results.add(plugin, {
-          err: `error on host ${host}: ${err.message}`,
-        })
-      if (!plugin.cfg.reject.error) return next()
-      return next(DENYSOFT, 'Virus scanner error')
+      settle({
+        kind: connected ? 'post_connect_error' : 'connect_failed',
+        reason: err.message,
+      })
     })
 
     socket.on('connect', () => {
@@ -241,134 +277,74 @@ exports.hook_data_post = function (next, connection) {
       })
     })
 
-    let result = ''
     socket.on('line', (line) => {
-      connection.logprotocol(
-        plugin,
-        `C:${line
-          .split('')
-          .filter((x) => {
-            return 31 < x.charCodeAt(0) && 127 > x.charCodeAt(0)
-          })
-          .join('')}`,
-      )
-      result = line.replace(/\r?\n/, '')
+      connection.logprotocol(plugin, `C:${line.replace(/[^\x20-\x7e]/g, '')}`)
+      lastLine = line.replace(/\r?\n/, '')
     })
 
-    socket.setTimeout((cfg.main.connect_timeout || 10) * 1000)
-
-    socket.on('end', () => {
-      if (!txn) return next()
-      if (/^stream: OK/.test(result)) {
-        // OK
-        txn.results.add(plugin, { pass: 'clean', emit: true })
-        return next()
-      }
-
-      const m = /^stream: (\S+) FOUND/.exec(result)
-      if (m) {
-        let virus // Virus found
-        if (m[1]) {
-          virus = m[1]
-        }
-        txn.results.add(plugin, {
-          fail: virus ? virus : 'virus',
-          emit: true,
-        })
-
-        if (
-          virus &&
-          plugin.rejectRE && // enabled
-          plugin.allRE.test(virus) && // has a reject option
-          !plugin.rejectRE.test(virus)
-        ) {
-          // reject=false set
-          txn.add_header('X-Haraka-Virus', virus)
-          return next()
-        }
-        if (!plugin.cfg.reject.virus) {
-          return next()
-        }
-
-        // Check skip list exclusions
-        for (const element of plugin.skip_list_exclude) {
-          if (!element.test(virus)) continue
-          return next(DENY, `Message is infected with ${virus || 'UNKNOWN'}`)
-        }
-
-        // Check skip list
-        for (const element of plugin.skip_list) {
-          if (!element.test(virus)) continue
-          connection.logwarn(plugin, `${virus} matches exclusion`)
-          txn.add_header('X-Haraka-Virus', virus)
-          return next()
-        }
-        return next(DENY, `Message is infected with ${virus || 'UNKNOWN'}`)
-      }
-
-      if (/size limit exceeded/.test(result)) {
-        txn.results.add(plugin, {
-          err:
-            'INSTREAM size limit exceeded. Check ' +
-            'StreamMaxLength in clamd.conf',
-        })
-        // Continue as StreamMaxLength default is 25Mb
-        return next()
-      }
-
-      // The current host returned an unknown result.  If other hosts are available,
-      // then try those before returning a DENYSOFT.
-      if (hosts.length) {
-        connection.logwarn(
-          plugin,
-          `unknown result: '${result}' from host ${host}`,
-        )
-        socket.destroy()
-        return try_next_host()
-      }
-      txn.results.add(plugin, {
-        err: `unknown result: '${result}' from host ${host}`,
-      })
-      if (!plugin.cfg.reject.error) return next()
-      return next(DENYSOFT, 'Error running virus scanner')
-    })
+    socket.on('end', () => settle({ kind: 'done', line: lastLine }))
 
     clamd_connect(socket, host)
-  }
+  })
+}
 
-  // Start the process
-  try_next_host()
+function parse_clamd_result(line) {
+  if (/^stream: OK/.test(line)) return { kind: 'clean' }
+  const m = /^stream: (\S+) FOUND/.exec(line)
+  if (m) return { kind: 'virus', virus: m[1] }
+  if (/size limit exceeded/.test(line)) return { kind: 'size_limit' }
+  return { kind: 'unknown' }
+}
+
+// Decide what to do with a virus name based on plugin config:
+//   - tag: true means add the X-Haraka-Virus header alongside the action
+//   - matched_exclusion: true means the skip_list rescued the message
+function decide_virus_action(plugin, virus) {
+  // A virus that matches a known category whose reject flag is off → pass + tag.
+  if (
+    virus &&
+    plugin.rejectRE &&
+    plugin.allRE.test(virus) &&
+    !plugin.rejectRE.test(virus)
+  ) {
+    return { action: 'pass', tag: true }
+  }
+  if (!plugin.cfg.reject.virus) return { action: 'pass', tag: false }
+  // skip_list_exclude wins over skip_list (forces a reject even if skip_list would match).
+  if (plugin.skip_list_exclude.some((re) => re.test(virus))) {
+    return { action: 'reject' }
+  }
+  for (const re of plugin.skip_list) {
+    if (re.test(virus))
+      return { action: 'pass', tag: true, matched_exclusion: true }
+  }
+  return { action: 'reject' }
 }
 
 exports.should_check = function (connection) {
-  let result = true // default
   if (!connection?.transaction) return false
 
-  if (this.cfg.check.authenticated == false && connection.notes.auth_user) {
-    connection.transaction.results.add(this, { skip: 'authed' })
-    result = false
+  const { cfg } = this
+  const { remote, notes, relaying } = connection
+  const txn = connection.transaction
+
+  const reasons = []
+  if (cfg.check.authenticated === false && notes.auth_user)
+    reasons.push('authed')
+  if (cfg.check.relay === false && relaying) reasons.push('relay')
+  if (cfg.check.local_ip === false && remote.is_local) reasons.push('local_ip')
+  // A local IP is also a private IP. If the operator has opted into local_ip
+  // checking, don't separately add a private_ip skip for the same connection.
+  if (
+    cfg.check.private_ip === false &&
+    remote.is_private &&
+    !(cfg.check.local_ip === true && remote.is_local)
+  ) {
+    reasons.push('private_ip')
   }
 
-  if (this.cfg.check.relay == false && connection.relaying) {
-    connection.transaction.results.add(this, { skip: 'relay' })
-    result = false
-  }
-
-  if (this.cfg.check.local_ip == false && connection.remote.is_local) {
-    connection.transaction.results.add(this, { skip: 'local_ip' })
-    result = false
-  }
-
-  if (this.cfg.check.private_ip == false && connection.remote.is_private) {
-    if (this.cfg.check.local_ip == true && connection.remote.is_local) {
-      // local IPs are included in private IPs
-    } else {
-      connection.transaction.results.add(this, { skip: 'private_ip' })
-      result = false
-    }
-  }
-
-  return result
+  for (const skip of reasons) txn.results.add(this, { skip })
+  return reasons.length === 0
 }
 
 exports.send_clamd_predata = (socket, cb) => {
