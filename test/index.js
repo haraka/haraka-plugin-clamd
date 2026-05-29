@@ -6,13 +6,11 @@ const os = require('node:os')
 const path = require('node:path')
 const { afterEach, beforeEach, describe, it } = require('node:test')
 
-const fixtures = require('haraka-test-fixtures')
+const { makePlugin, makeConnection } = require('haraka-test-fixtures')
 
 const _set_up = () => {
-  this.plugin = new fixtures.plugin('clamd')
-  this.plugin.register()
-  this.connection = fixtures.connection.createConnection()
-  this.connection.init_transaction()
+  this.plugin = makePlugin('clamd')
+  this.connection = makeConnection({ withTxn: true })
 }
 
 const runHook = (call) => new Promise((resolve) => call((...a) => resolve(a)))
