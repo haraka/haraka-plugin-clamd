@@ -412,6 +412,18 @@ describe('plugins/clamd', () => {
       assert.equal(args[0], DENYSOFT)
     })
 
+    it('DENYSOFTs (not hangs) when a host entry is unparseable', async () => {
+      // net_utils.endpoint rejects a malformed host; the throw must be caught
+      // so the hook still calls next() rather than hanging the data_post hook.
+      const args = await run({
+        tweak: (p) => {
+          p.cfg.main.clamd_socket = '@@@'
+          p.cfg.reject.error = true
+        },
+      })
+      assert.equal(args[0], DENYSOFT)
+    })
+
     it('DENYSOFTs when clamd connects but never replies (scan timeout)', async () => {
       await primeTxn()
       // Server that accepts the connection and drains data but never sends a response,

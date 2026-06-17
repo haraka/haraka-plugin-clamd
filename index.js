@@ -75,7 +75,7 @@ exports.load_clamd_ini = function () {
     max_size: 26214400,
   }
 
-  for (const key in defaults) {
+  for (const key of Object.keys(defaults)) {
     if (this.cfg.main[key] === undefined) {
       this.cfg.main[key] = defaults[key]
     }
@@ -123,7 +123,7 @@ exports.hook_data = function (next, connection) {
 
   const txn = connection.transaction
   txn.parse_body = true
-  txn.attachment_hooks((ctype, filename, body) => {
+  txn.attachment_hooks((ctype, filename) => {
     connection.logdebug(this, `found ctype=${ctype}, filename=${filename}`)
     txn.notes.clamd_found_attachment = true
   })
@@ -132,104 +132,125 @@ exports.hook_data = function (next, connection) {
 }
 
 exports.hook_data_post = async function (next, connection) {
-  const plugin = this
-  if (!plugin.should_check(connection)) return next()
+  if (!this.should_check(connection)) return next()
 
   const txn = connection.transaction
-  const { cfg } = plugin
+  const { cfg } = this
 
   if (cfg.main.only_with_attachments && !txn.notes.clamd_found_attachment) {
-    connection.logdebug(plugin, 'skipping: no attachments found')
-    txn.results.add(plugin, { skip: 'no attachments' })
+    connection.logdebug(this, 'skipping: no attachments found')
+    txn.results.add(this, { skip: 'no attachments' })
     return next()
   }
 
   if (txn.data_bytes > cfg.main.max_size) {
-    txn.results.add(plugin, { skip: 'exceeds max size', emit: true })
+    txn.results.add(this, { skip: 'exceeds max size', emit: true })
     return next()
   }
 
-  const hosts = cfg.main.clamd_socket.split(/[,; ]+/)
-  if (cfg.main.randomize_host_order) hosts.sort(() => 0.5 - Math.random())
+  const hosts = cfg.main.clamd_socket.split(/[,; ]+/).filter(Boolean)
+  if (cfg.main.randomize_host_order) utils.shuffle(hosts)
 
   for (let i = 0; i < hosts.length; i++) {
     const host = hosts[i]
-    const isLast = i === hosts.length - 1
-    connection.logdebug(plugin, `trying host: ${host}`)
+    connection.logdebug(this, `trying host: ${host}`)
 
-    const outcome = await scan_against(plugin, connection, txn, host)
-
-    if (outcome.kind === 'connect_failed') {
-      connection.logerror(
-        plugin,
-        `Connection to ${host} failed: ${outcome.reason}`,
-      )
-      continue
-    }
-
-    if (outcome.kind === 'post_connect_error') {
-      if (!isLast) {
-        connection.logwarn(plugin, `error on host ${host}: ${outcome.reason}`)
-        continue
-      }
-      txn.results.add(plugin, {
-        err: `error on host ${host}: ${outcome.reason}`,
-      })
-      if (!cfg.reject.error) return next()
-      return next(DENYSOFT, 'Virus scanner error')
-    }
-
-    if (outcome.kind === 'scan_timeout') {
-      txn.results.add(plugin, { err: 'clamd timed out' })
-      if (!cfg.reject.error) return next()
-      return next(DENYSOFT, 'Virus scanner timed out')
-    }
-
-    const parsed = parse_clamd_result(outcome.line)
-
-    if (parsed.kind === 'clean') {
-      txn.results.add(plugin, { pass: 'clean', emit: true })
-      return next()
-    }
-
-    if (parsed.kind === 'size_limit') {
-      txn.results.add(plugin, {
-        err: 'INSTREAM size limit exceeded. Check StreamMaxLength in clamd.conf',
-      })
-      return next()
-    }
-
-    if (parsed.kind === 'virus') {
-      txn.results.add(plugin, { fail: parsed.virus || 'virus', emit: true })
-      const decision = decide_virus_action(plugin, parsed.virus)
-      if (decision.matched_exclusion) {
-        connection.logwarn(plugin, `${parsed.virus} matches exclusion`)
-      }
-      if (decision.action === 'pass') {
-        if (decision.tag) txn.add_header('X-Haraka-Virus', parsed.virus)
-        return next()
-      }
-      return next(DENY, `Message is infected with ${parsed.virus || 'UNKNOWN'}`)
-    }
-
-    // unknown result
-    if (!isLast) {
-      connection.logwarn(
-        plugin,
-        `unknown result: '${outcome.line}' from host ${host}`,
-      )
-      continue
-    }
-    txn.results.add(plugin, {
-      err: `unknown result: '${outcome.line}' from host ${host}`,
-    })
-    if (!cfg.reject.error) return next()
-    return next(DENYSOFT, 'Error running virus scanner')
+    const outcome = await scan_against(this, connection, txn, host)
+    const decision = classify_outcome(
+      this,
+      connection,
+      host,
+      i === hosts.length - 1,
+      outcome,
+    )
+    if (decision.retry) continue
+    return next(...decision.next)
   }
 
-  txn.results.add(plugin, { err: 'connecting' })
-  if (!cfg.reject.error) return next()
-  return next(DENYSOFT, 'Error connecting to virus scanner')
+  txn.results.add(this, { err: 'connecting' })
+  return next(...defer_on_error(cfg, 'Error connecting to virus scanner').next)
+}
+
+const RETRY = { retry: true }
+const ACCEPT = { next: [] }
+
+function defer_on_error(cfg, msg) {
+  return { next: cfg.reject.error ? [DENYSOFT, msg] : [] }
+}
+
+// Map a single host's scan outcome to either a retry (try the next host) or
+// the final next() arguments. The transient kinds (connect_failed, and a
+// post_connect_error or unknown result that isn't from the last host) retry;
+// everything else is terminal.
+function classify_outcome(plugin, connection, host, isLast, outcome) {
+  const { cfg } = plugin
+  const txn = connection.transaction
+
+  if (outcome.kind === 'connect_failed') {
+    connection.logerror(
+      plugin,
+      `Connection to ${host} failed: ${outcome.reason}`,
+    )
+    return RETRY
+  }
+
+  if (outcome.kind === 'post_connect_error') {
+    if (!isLast) {
+      connection.logwarn(plugin, `error on host ${host}: ${outcome.reason}`)
+      return RETRY
+    }
+    txn.results.add(plugin, { err: `error on host ${host}: ${outcome.reason}` })
+    return defer_on_error(cfg, 'Virus scanner error')
+  }
+
+  if (outcome.kind === 'scan_timeout') {
+    txn.results.add(plugin, { err: 'clamd timed out' })
+    return defer_on_error(cfg, 'Virus scanner timed out')
+  }
+
+  const parsed = parse_clamd_result(outcome.line)
+
+  if (parsed.kind === 'clean') {
+    txn.results.add(plugin, { pass: 'clean', emit: true })
+    return ACCEPT
+  }
+
+  if (parsed.kind === 'size_limit') {
+    txn.results.add(plugin, {
+      err: 'INSTREAM size limit exceeded. Check StreamMaxLength in clamd.conf',
+    })
+    return ACCEPT
+  }
+
+  if (parsed.kind === 'virus') {
+    return classify_virus(plugin, connection, parsed.virus)
+  }
+
+  if (!isLast) {
+    connection.logwarn(
+      plugin,
+      `unknown result: '${outcome.line}' from host ${host}`,
+    )
+    return RETRY
+  }
+  txn.results.add(plugin, {
+    err: `unknown result: '${outcome.line}' from host ${host}`,
+  })
+  return defer_on_error(cfg, 'Error running virus scanner')
+}
+
+function classify_virus(plugin, connection, virus) {
+  const txn = connection.transaction
+  txn.results.add(plugin, { fail: virus || 'virus', emit: true })
+  const decision = decide_virus_action(plugin, virus)
+  if (decision.matched_exclusion) {
+    connection.logwarn(plugin, `${virus} matches exclusion`)
+  }
+  if (decision.action === 'pass') {
+    if (decision.tag) txn.add_header('X-Haraka-Virus', virus)
+    return ACCEPT
+  }
+  return { next: [DENY, `Message is infected with ${virus || 'UNKNOWN'}`] }
 }
 
 function scan_against(plugin, connection, txn, host) {
@@ -273,10 +294,13 @@ function scan_against(plugin, connection, txn, host) {
       // message_stream.pipe() resets it, so it cannot bound the total scan
       // duration. Use an absolute deadline instead.
       socket.setTimeout(0)
-      scanTimer = setTimeout(() => {
-        settle({ kind: 'scan_timeout' })
-        socket.destroy()
-      }, (cfg.main.timeout || 30) * 1000)
+      scanTimer = setTimeout(
+        () => {
+          settle({ kind: 'scan_timeout' })
+          socket.destroy()
+        },
+        (cfg.main.timeout || 30) * 1000,
+      )
       const hp = socket.address()
       const addressInfo = hp === null ? '' : ` ${hp.address}:${hp.port}`
       connection.logdebug(plugin, `connected to host${addressInfo}`)
@@ -292,7 +316,12 @@ function scan_against(plugin, connection, txn, host) {
 
     socket.on('end', () => settle({ kind: 'done', line: lastLine }))
 
-    clamd_connect(socket, host)
+    try {
+      clamd_connect(socket, host)
+    } catch (err) {
+      socket.destroy()
+      settle({ kind: 'connect_failed', reason: err.message })
+    }
   })
 }
 

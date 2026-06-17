@@ -50,9 +50,11 @@ been tried then a temporary failure will be returned.
 
 ### timeout (default: 30)
 
-Post-connection timeout if there is no activity on the socket after
-this many seconds. A timeout will cause the message to be rejected
-with a tempoary failure.
+Maximum time, in seconds, for the whole scan once connected: sending the
+message to clamd and receiving its verdict. This is an absolute deadline,
+not an inactivity timer, so it bounds the total scan even while a large
+message is still streaming. If it elapses the message is deferred with a
+temporary failure. Raise it if you scan large messages (see max_size).
 
 ### max_size (default: 26214400)
 
