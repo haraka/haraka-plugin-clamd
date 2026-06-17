@@ -4,6 +4,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Unreleased
 
+### [1.0.4] - 2026-06-17
+
+- fix(scan_against): replace inactivity socket timeout with an absolute deadline after connect; the previous `socket.setTimeout` reset on every write during `message_stream.pipe()`, allowing large messages to exhaust Haraka's hook watchdog before the plugin's own timeout fired
 - test: refactored against test-fixtures 1.7.0
 
 ### [1.0.3] - 2026-05-24

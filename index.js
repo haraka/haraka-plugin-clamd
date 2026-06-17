@@ -241,21 +241,22 @@ function scan_against(plugin, connection, txn, host) {
     let connected = false
     let lastLine = ''
     let settled = false
+    let scanTimer = null
+
     const settle = (outcome) => {
       if (settled) return
       settled = true
+      clearTimeout(scanTimer)
       resolve(outcome)
     }
 
     socket.setTimeout((cfg.main.connect_timeout || 10) * 1000)
 
     socket.on('timeout', () => {
+      // Only fires during the connection phase; we disable the socket timeout
+      // after connect and switch to an absolute deadline (see below).
       socket.destroy()
-      settle(
-        connected
-          ? { kind: 'scan_timeout' }
-          : { kind: 'connect_failed', reason: 'timeout' },
-      )
+      settle({ kind: 'connect_failed', reason: 'timeout' })
     })
 
     socket.on('error', (err) => {
@@ -268,7 +269,14 @@ function scan_against(plugin, connection, txn, host) {
 
     socket.on('connect', () => {
       connected = true
-      socket.setTimeout((cfg.main.timeout || 30) * 1000)
+      // socket.setTimeout is an inactivity timer: every write during
+      // message_stream.pipe() resets it, so it cannot bound the total scan
+      // duration. Use an absolute deadline instead.
+      socket.setTimeout(0)
+      scanTimer = setTimeout(() => {
+        settle({ kind: 'scan_timeout' })
+        socket.destroy()
+      }, (cfg.main.timeout || 30) * 1000)
       const hp = socket.address()
       const addressInfo = hp === null ? '' : ` ${hp.address}:${hp.port}`
       connection.logdebug(plugin, `connected to host${addressInfo}`)

@@ -411,5 +411,34 @@ describe('plugins/clamd', () => {
       })
       assert.equal(args[0], DENYSOFT)
     })
+
+    it('DENYSOFTs when clamd connects but never replies (scan timeout)', async () => {
+      await primeTxn()
+      // Server that accepts the connection and drains data but never sends a response,
+      // simulating a clamd that stalls mid-scan (e.g. during a database reload).
+      let serverConn = null
+      server = net.createServer({ allowHalfOpen: true }, (s) => {
+        serverConn = s
+        s.on('data', () => {})
+      })
+      const addr = await new Promise((resolve) => {
+        server.listen(0, '127.0.0.1', () => {
+          const { port } = server.address()
+          resolve(`127.0.0.1:${port}`)
+        })
+      })
+      this.plugin.cfg.main.clamd_socket = addr
+      this.plugin.cfg.main.timeout = 0.05 // 50 ms so the test runs fast
+      this.plugin.cfg.reject.error = true
+      const [code] = await runHook((next) =>
+        this.plugin.hook_data_post(next, this.connection),
+      )
+      // Destroy the server-side socket so afterEach's server.close() can complete;
+      // with allowHalfOpen:true the server never auto-closes after receiving client FIN.
+      serverConn?.destroy()
+      assert.equal(code, DENYSOFT)
+      const r = this.connection.transaction.results.get('clamd')
+      assert.ok(r.err.join().includes('timed out'))
+    })
   })
 })
