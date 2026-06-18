@@ -186,6 +186,8 @@ function classify_outcome(plugin, connection, host, isLast, outcome) {
   const { cfg } = plugin
   const txn = connection.transaction
 
+  if (!txn) return ACCEPT // client disconnected while clamd was scanning
+
   if (outcome.kind === 'connect_failed') {
     connection.logerror(
       plugin,
@@ -241,6 +243,7 @@ function classify_outcome(plugin, connection, host, isLast, outcome) {
 
 function classify_virus(plugin, connection, virus) {
   const txn = connection.transaction
+  if (!txn) return ACCEPT // client disconnected while clamd was scanning
   txn.results.add(plugin, { fail: virus || 'virus', emit: true })
   const decision = decide_virus_action(plugin, virus)
   if (decision.matched_exclusion) {
