@@ -453,4 +453,59 @@ describe('plugins/clamd', () => {
       assert.ok(r.err.join().includes('timed out'))
     })
   })
+
+  describe('register', () => {
+    beforeEach(_set_up)
+
+    it('registers explicit data + data_post hooks', () => {
+      assert.ok(this.plugin.hooks.data.includes('clamd_data'))
+      assert.ok(this.plugin.hooks.data_post.includes('clamd_data_post'))
+    })
+  })
+
+  describe('handle_clamd', () => {
+    beforeEach(_set_up)
+
+    it('clean line -> pass, CONT', () => {
+      const args = this.plugin.handle_clamd(this.connection, 'stream: OK')
+      assert.deepEqual(args, [])
+      assert.ok(results().pass.includes('clean'))
+    })
+
+    it('virus line -> fail + DENY', () => {
+      const [code, msg] = this.plugin.handle_clamd(
+        this.connection,
+        'stream: Eicar-Test-Signature FOUND',
+      )
+      assert.equal(code, DENY)
+      assert.match(msg, /infected with Eicar-Test-Signature/)
+      assert.ok(results().fail.includes('Eicar-Test-Signature'))
+    })
+
+    it('virus accepted when reject.virus is false', () => {
+      this.plugin.cfg.reject.virus = false
+      const args = this.plugin.handle_clamd(
+        this.connection,
+        'stream: Eicar-Test FOUND',
+      )
+      assert.deepEqual(args, [])
+      assert.ok(results().fail.includes('Eicar-Test'))
+    })
+
+    it('size-limit line -> err, CONT', () => {
+      const args = this.plugin.handle_clamd(
+        this.connection,
+        'INSTREAM size limit exceeded',
+      )
+      assert.deepEqual(args, [])
+      assert.match(results().err.join(), /size limit/)
+    })
+
+    it('unknown line -> err; DENYSOFT when reject.error', () => {
+      this.plugin.cfg.reject.error = true
+      const [code] = this.plugin.handle_clamd(this.connection, 'wat')
+      assert.equal(code, DENYSOFT)
+      assert.match(results().err.join(), /unknown result/)
+    })
+  })
 })
