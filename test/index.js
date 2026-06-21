@@ -74,11 +74,11 @@ describe('plugins/clamd', () => {
     })
   })
 
-  describe('hook_data', () => {
+  describe('clamd_data', () => {
     beforeEach(_set_up)
 
     const runData = () =>
-      runHook((next) => this.plugin.hook_data(next, this.connection))
+      runHook((next) => this.plugin.clamd_data(next, this.connection))
 
     it('attachment hook flags clamd_found_attachment', async () => {
       this.plugin.cfg.main.only_with_attachments = true
@@ -106,11 +106,11 @@ describe('plugins/clamd', () => {
     })
   })
 
-  describe('hook_data_post', () => {
+  describe('clamd_data_post', () => {
     beforeEach(_set_up)
 
     const runPost = () =>
-      runHook((next) => this.plugin.hook_data_post(next, this.connection))
+      runHook((next) => this.plugin.clamd_data_post(next, this.connection))
 
     it('skip attachment', async () => {
       this.connection.transaction.notes = { clamd_found_attachment: false }
@@ -238,7 +238,7 @@ describe('plugins/clamd', () => {
     })
   })
 
-  describe('hook_data_post (full clamd exchange)', () => {
+  describe('clamd_data_post (full clamd exchange)', () => {
     let server
 
     const primeTxn = () =>
@@ -277,7 +277,7 @@ describe('plugins/clamd', () => {
       }
       tweak?.(this.plugin, this.connection)
       return runHook((next) =>
-        this.plugin.hook_data_post(next, this.connection),
+        this.plugin.clamd_data_post(next, this.connection),
       )
     }
 
@@ -443,7 +443,7 @@ describe('plugins/clamd', () => {
       this.plugin.cfg.main.timeout = 0.05 // 50 ms so the test runs fast
       this.plugin.cfg.reject.error = true
       const [code] = await runHook((next) =>
-        this.plugin.hook_data_post(next, this.connection),
+        this.plugin.clamd_data_post(next, this.connection),
       )
       // Destroy the server-side socket so afterEach's server.close() can complete;
       // with allowHalfOpen:true the server never auto-closes after receiving client FIN.
