@@ -114,9 +114,15 @@ exports.load_clamd_ini = function () {
 exports.register = function () {
   this.load_excludes()
   this.load_clamd_ini()
+  // explicit hooks (not magic hook_*) so the plugin can be inherited; don't
+  // rename. guarded so inheritors don't re-register. haraka/Haraka#3604
+  if (this.name === 'clamd') {
+    this.register_hook('data', 'clamd_data')
+    this.register_hook('data_post', 'clamd_data_post')
+  }
 }
 
-exports.hook_data = function (next, connection) {
+exports.clamd_data = function (next, connection) {
   if (!this.cfg.main.only_with_attachments) return next()
 
   if (!this.should_check(connection)) return next()
@@ -131,7 +137,7 @@ exports.hook_data = function (next, connection) {
   next()
 }
 
-exports.hook_data_post = async function (next, connection) {
+exports.clamd_data_post = async function (next, connection) {
   if (!this.should_check(connection)) return next()
 
   const txn = connection.transaction
@@ -254,6 +260,28 @@ function classify_virus(plugin, connection, virus) {
     return ACCEPT
   }
   return { next: [DENY, `Message is infected with ${virus || 'UNKNOWN'}`] }
+}
+
+// handle a single clamd result line (annotate + reject decision). I/O-free so
+// inheriting plugins can reuse it; returns next() args ([] = CONT). #3604
+exports.handle_clamd = function (connection, line) {
+  if (!connection.transaction) return []
+  const parsed = parse_clamd_result(line)
+  if (parsed.kind === 'clean') {
+    connection.transaction.results.add(this, { pass: 'clean', emit: true })
+    return []
+  }
+  if (parsed.kind === 'size_limit') {
+    connection.transaction.results.add(this, {
+      err: 'INSTREAM size limit exceeded. Check StreamMaxLength in clamd.conf',
+    })
+    return []
+  }
+  if (parsed.kind === 'virus') {
+    return classify_virus(this, connection, parsed.virus).next
+  }
+  connection.transaction.results.add(this, { err: `unknown result: '${line}'` })
+  return defer_on_error(this.cfg, 'Error running virus scanner').next
 }
 
 function scan_against(plugin, connection, txn, host) {

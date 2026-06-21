@@ -74,11 +74,11 @@ describe('plugins/clamd', () => {
     })
   })
 
-  describe('hook_data', () => {
+  describe('clamd_data', () => {
     beforeEach(_set_up)
 
     const runData = () =>
-      runHook((next) => this.plugin.hook_data(next, this.connection))
+      runHook((next) => this.plugin.clamd_data(next, this.connection))
 
     it('attachment hook flags clamd_found_attachment', async () => {
       this.plugin.cfg.main.only_with_attachments = true
@@ -106,11 +106,11 @@ describe('plugins/clamd', () => {
     })
   })
 
-  describe('hook_data_post', () => {
+  describe('clamd_data_post', () => {
     beforeEach(_set_up)
 
     const runPost = () =>
-      runHook((next) => this.plugin.hook_data_post(next, this.connection))
+      runHook((next) => this.plugin.clamd_data_post(next, this.connection))
 
     it('skip attachment', async () => {
       this.connection.transaction.notes = { clamd_found_attachment: false }
@@ -238,7 +238,7 @@ describe('plugins/clamd', () => {
     })
   })
 
-  describe('hook_data_post (full clamd exchange)', () => {
+  describe('clamd_data_post (full clamd exchange)', () => {
     let server
 
     const primeTxn = () =>
@@ -277,7 +277,7 @@ describe('plugins/clamd', () => {
       }
       tweak?.(this.plugin, this.connection)
       return runHook((next) =>
-        this.plugin.hook_data_post(next, this.connection),
+        this.plugin.clamd_data_post(next, this.connection),
       )
     }
 
@@ -443,7 +443,7 @@ describe('plugins/clamd', () => {
       this.plugin.cfg.main.timeout = 0.05 // 50 ms so the test runs fast
       this.plugin.cfg.reject.error = true
       const [code] = await runHook((next) =>
-        this.plugin.hook_data_post(next, this.connection),
+        this.plugin.clamd_data_post(next, this.connection),
       )
       // Destroy the server-side socket so afterEach's server.close() can complete;
       // with allowHalfOpen:true the server never auto-closes after receiving client FIN.
@@ -451,6 +451,61 @@ describe('plugins/clamd', () => {
       assert.equal(code, DENYSOFT)
       const r = this.connection.transaction.results.get('clamd')
       assert.ok(r.err.join().includes('timed out'))
+    })
+  })
+
+  describe('register', () => {
+    beforeEach(_set_up)
+
+    it('registers explicit data + data_post hooks', () => {
+      assert.ok(this.plugin.hooks.data.includes('clamd_data'))
+      assert.ok(this.plugin.hooks.data_post.includes('clamd_data_post'))
+    })
+  })
+
+  describe('handle_clamd', () => {
+    beforeEach(_set_up)
+
+    it('clean line -> pass, CONT', () => {
+      const args = this.plugin.handle_clamd(this.connection, 'stream: OK')
+      assert.deepEqual(args, [])
+      assert.ok(results().pass.includes('clean'))
+    })
+
+    it('virus line -> fail + DENY', () => {
+      const [code, msg] = this.plugin.handle_clamd(
+        this.connection,
+        'stream: Eicar-Test-Signature FOUND',
+      )
+      assert.equal(code, DENY)
+      assert.match(msg, /infected with Eicar-Test-Signature/)
+      assert.ok(results().fail.includes('Eicar-Test-Signature'))
+    })
+
+    it('virus accepted when reject.virus is false', () => {
+      this.plugin.cfg.reject.virus = false
+      const args = this.plugin.handle_clamd(
+        this.connection,
+        'stream: Eicar-Test FOUND',
+      )
+      assert.deepEqual(args, [])
+      assert.ok(results().fail.includes('Eicar-Test'))
+    })
+
+    it('size-limit line -> err, CONT', () => {
+      const args = this.plugin.handle_clamd(
+        this.connection,
+        'INSTREAM size limit exceeded',
+      )
+      assert.deepEqual(args, [])
+      assert.match(results().err.join(), /size limit/)
+    })
+
+    it('unknown line -> err; DENYSOFT when reject.error', () => {
+      this.plugin.cfg.reject.error = true
+      const [code] = this.plugin.handle_clamd(this.connection, 'wat')
+      assert.equal(code, DENYSOFT)
+      assert.match(results().err.join(), /unknown result/)
     })
   })
 })

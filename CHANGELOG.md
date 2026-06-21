@@ -4,9 +4,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Unreleased
 
+### [1.0.6] - 2026-06-20
+
+- refactor: rename hook_data/hook_data_post to clamd_data/clamd_data_post
+- add reusable handle_clamd (parse line + reject decision)
+  - related to haraka/Haraka#3604
+
 ### [1.0.5] - 2026-06-18
 
-- fix(classify_outcome): guard against null transaction when client disconnects during scan
+- fix(classify_outcome): guard against null transaction
 
 ### [1.0.4] - 2026-06-17
 
